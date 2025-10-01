@@ -1,0 +1,16 @@
+[browser]
+gatherUsageStats = false
+
+[server]
+enableCORS = false
+headless = false
+
+[theme]
+base = "light"
+primaryColor = "#d20000"      # rojo Santander (aprox)
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f7f7f7"
+textColor = "#111111"
+
+[client]
+toolbarMode = "minimal"
