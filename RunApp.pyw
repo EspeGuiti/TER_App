@@ -81,4 +81,11 @@ def main():
         subprocess.Popen(cmd, cwd=HERE, env=env, stdout=f, stderr=f)
 
     msgbox("Abriendo", "La app se está abriendo en http://localhost:8501")
-    tim
+    time.sleep(1)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        log(f"ERROR: {e}")
+        errbox("Error", f"Consulta run_app.log para más detalle.\n\n{e}")
