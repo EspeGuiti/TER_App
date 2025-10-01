@@ -1,0 +1,27 @@
+@echo off
+setlocal
+cd /d "%~dp0"
+
+set "PY_EXE=python"
+%PY_EXE% --version >nul 2>&1
+if errorlevel 1 (
+  py -3.11 --version >nul 2>&1 && set "PY_EXE=py -3.11"
+)
+%PY_EXE% --version >nul 2>&1 || (
+  echo Python not found. Install Python 3.11 64-bit.
+  pause & exit /b 1
+)
+
+if not exist ".venv" %PY_EXE% -m venv .venv
+call ".venv\Scripts\activate"
+
+%PY_EXE% -m pip install --upgrade pip >nul
+
+echo Installing dependencies OFFLINE...
+pip install --no-index --find-links=offline\wheels -r requirements.txt || (
+  echo Offline install failed. Check offline\wheels content.
+  pause & exit /b 1
+)
+
+start "" http://localhost:8501
+streamlit run app.py --server.address localhost --server.port 8501 --server.headless false
