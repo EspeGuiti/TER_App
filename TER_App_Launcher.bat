@@ -1,62 +1,43 @@
 @echo off
 setlocal
-REM ===========================
-REM Lanzador todo-en-uno (Windows)
-REM - Crea venv .venv si no existe
-REM - Instala requirements si faltan
-REM - Arranca la app en http://localhost:8501
-REM ===========================
 
+REM Ir a la carpeta del script
 cd /d "%~dp0"
 
-REM 1) Comprobar Python
-python --version >nul 2>&1
+REM ----- Seleccionar ejecutable de Python (python o py -3.11) -----
+set "PY_EXE=python"
+%PY_EXE% --version >nul 2>&1
 if errorlevel 1 (
-  echo.
-  echo ❌ No se encontro Python en PATH.
-  echo Instala Python 3.11 (64-bit) desde Software Center o IT y vuelve a ejecutar.
+  py -3.11 --version >nul 2>&1 && set "PY_EXE=py -3.11"
+)
+%PY_EXE% --version >nul 2>&1 || (
+  echo No se encontro Python en PATH. Instala Python 3.11 (64-bit) y vuelve a ejecutar.
   pause
   exit /b 1
 )
 
-REM 2) Crear venv si no existe
-if not exist .venv (
-  echo.
-  echo ⏳ Creando entorno virtual .venv ...
-  python -m venv .venv
-  if errorlevel 1 (
-    echo ❌ Error creando el entorno virtual.
-    pause
-    exit /b 1
-  )
+REM ----- Crear venv si no existe -----
+if not exist ".venv" (
+  echo Creando entorno virtual .venv ...
+  %PY_EXE% -m venv .venv || goto :error
 )
 
-REM 3) Activar venv y actualizar pip
-call .venv\Scripts\activate
-python -m pip --version >nul 2>&1 || (python -m ensurepip)
-python -m pip install --upgrade pip wheel >nul
+REM ----- Activar venv y actualizar pip -----
+call ".venv\Scripts\activate" || goto :error
+%PY_EXE% -m pip install --upgrade pip wheel || goto :error
 
-REM 4) Instalar requirements solo si faltan (o si hay cambios)
-echo.
-echo ⏳ Comprobando dependencias...
-pip install -r requirements.txt >nul
-if errorlevel 1 (
-  echo.
-  echo ❌ No se pudieron instalar dependencias desde Internet.
-  echo - Si estais tras proxy corporativo, probad:
-  echo      set HTTP_PROXY=http://usuario:pass@proxy:puerto
-  echo      set HTTPS_PROXY=%%HTTP_PROXY%%
-  echo - Si no hay salida a Internet, pedid el paquete OFFLINE.
-  pause
-  exit /b 1
-)
+REM ----- Instalar dependencias -----
+echo Instalando dependencias (requirements.txt) ...
+pip install -r requirements.txt || goto :error
 
-REM 5) Forzar puerto fijo y abrir navegador
-set STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
-
-echo.
-echo ✅ Todo listo. Abriendo la app...
+REM ----- Abrir navegador y lanzar Streamlit -----
 start "" http://localhost:8501
-
-REM 6) Lanzar Streamlit
 streamlit run app.py --server.port 8501 --server.headless false
+exit /b 0
+
+:error
+echo.
+echo Hubo un error durante la instalacion o el lanzamiento.
+echo Deja esta ventana abierta y copia el mensaje de arriba para revisarlo.
+pause
+exit /b 1
