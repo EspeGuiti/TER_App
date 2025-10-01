@@ -1,9 +1,9 @@
 [browser]
 gatherUsageStats = false
-serverAddress = "localhost"   # fuerza que el navegador apunte a localhost
+serverAddress = "localhost"
 
 [server]
-address = "localhost"         # escucha solo en localhost (no red)
-port = 8501                   # cambia si lo necesitas
-headless = false              # true = no intenta abrir navegador
-fileWatcherType = "auto"      # o "poll" si hay restricciones de fs
+address = "localhost"
+port = 8501
+headless = false
+fileWatcherType = "auto"
