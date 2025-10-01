@@ -1,9 +1,0 @@
-[browser]
-gatherUsageStats = false
-serverAddress = "localhost"
-
-[server]
-address = "localhost"
-port = 8501
-headless = false
-fileWatcherType = "auto"
