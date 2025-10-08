@@ -12,6 +12,10 @@ from sam_clean_map import SAM_CLEAN_MAP
 st.set_page_config(page_title="Calculadora TER + AI", layout="wide")
 st.markdown("# 📊 Calculadora de TER — Cartera I vs Cartera II (Asesoramiento Independiente)")
 
+# 👇 Disclaimer (letra pequeña, antes del Paso 1)
+st.caption("**Herramienta de uso interno.** Recordamos la obligación de revisar la información. IMPORTANTE: Consultar con los equipos correspondientes todas las clases con Incidencias")
+
+
 # =========================
 # Estado de sesión
 # =========================
