@@ -10,7 +10,7 @@ from sam_clean_map import SAM_CLEAN_MAP
 # Configuración de página
 # =========================
 st.set_page_config(page_title="Calculadora TER + AI", layout="wide")
-st.markdown("# 📊 Calculadora de TER — Cartera I vs Cartera II (Asesoramiento Independiente)")
+st.markdown("# ESTER: 📊 Calculadora de TER — Cartera I vs Cartera II (Asesoramiento Independiente)")
 
 # 👇 Disclaimer (letra pequeña, antes del Paso 1)
 st.caption("**Herramienta de uso interno.** Recordamos la obligación de revisar la información. IMPORTANTE: Consultar con los equipos correspondientes todas las clases con Incidencias a altayconsultasclasesasin@gruposantander.com")
@@ -247,22 +247,13 @@ Saludos,
 
     mail.Display()
 
-def _sam_lookup(fam: str, currency: Optional[str] = None, hedged: Optional[str] = None):
-    """
-    Busca entrada SAM por Family Name (único criterio real hoy).
-    Acepta los parámetros `currency` y `hedged` por compatibilidad con llamadas existentes,
-    pero actualmente los IGNORA porque el catálogo SAM sólo contiene 'Family Name' como clave.
-    """
+def _sam_lookup(fam: str, currency: str | None = None, hedged: str | None = None):
+    """Buscar entrada SAM por Family Name (único criterio hoy)."""
     if not fam:
         return None
     fam_norm = str(fam).strip().lower()
-
-    # Búsqueda case-insensitive y trimming por Family Name
     for rec in SAM_CLEAN_MAP:
-        rec_fam = rec.get("Family Name", "")
-        if rec_fam is None:
-            continue
-        if str(rec_fam).strip().lower() == fam_norm:
+        if str(rec.get("Family Name", "")).strip().lower() == fam_norm:
             return rec
     return None
 
@@ -654,14 +645,13 @@ if (
     and st.session_state.cartera_II["table"] is not None
 ):
     # --- Tablas base ---
-    dfI_all = st.session_state.cartera_I["table"].copy()          # todos los válidos en AllFunds (por ISIN) con valor
-    dfII_all = st.session_state.cartera_II["table"].copy()         # solo transformados AI (puede estar vacía)
+    dfI_all = st.session_state.cartera_I["table"].copy()    # Cartera I original (landing)
+    dfII_all = st.session_state.cartera_II["table"].copy()  # Cartera II generada en Paso 3 (AI) - fuente de verdad
 
-    # Mapear ISIN -> Family Name (clave estable para emparejar)
+    # Normalizar Family Name vía mapa de master (si procede)
     fam_map = df_master[["ISIN", "Family Name"]].copy()
     fam_map["ISIN"] = fam_map["ISIN"].astype(str).str.upper()
 
-    # Normaliza I con Family Name
     dfI_all["ISIN"] = dfI_all["ISIN"].astype(str).str.upper()
     dfI_all = pd.merge(dfI_all, fam_map, on="ISIN", how="left", suffixes=("", "_fam"))
     if "Family Name" not in dfI_all.columns:
@@ -670,7 +660,6 @@ if (
                 dfI_all.rename(columns={c: "Family Name"}, inplace=True)
                 break
 
-    # Normaliza II con Family Name
     if not dfII_all.empty:
         dfII_all["ISIN"] = dfII_all["ISIN"].astype(str).str.upper()
         dfII_all = pd.merge(dfII_all, fam_map, on="ISIN", how="left", suffixes=("", "_fam"))
@@ -680,36 +669,70 @@ if (
                     dfII_all.rename(columns={c: "Family Name"}, inplace=True)
                     break
 
-    # --- Candidatos: UNO por Family Name (origen = I; representativo por Name de I) ---
+    # Representative one-per-FamilyName from Cartera I (editor list)
     rep_I = (
-        dfI_all.sort_values(["Family Name","Name"])
+        dfI_all.sort_values(["Family Name", "Name"])
                .drop_duplicates(subset=["Family Name"], keep="first")
-               [["Family Name","Name","VALOR ACTUAL (EUR)","Ongoing Charge"]]
+               [["Family Name", "Name", "VALOR ACTUAL (EUR)", "Ongoing Charge"]]
                .reset_index(drop=True)
     )
 
+    # Sets / helpers
     families_in_II = set(dfII_all["Family Name"]) if not dfII_all.empty else set()
+    dfII_isins = set(dfII_all["ISIN"].astype(str).str.strip().str.upper().fillna("")) if not dfII_all.empty else set()
+    sam_isins = {str(r.get("ISIN", "")).strip().upper() for r in SAM_CLEAN_MAP if r.get("ISIN", "")}
 
-    # DataFrame del selector (persistente)
+    # Reglas forzadas (SIEMPRE disponibles si aparecen en Cartera I => mappeamos a target)
+    FORCE_MAP = {
+        "ES0112793031": "ES0174735037",  # SPB -> Santander Corto Plazo (target)
+        "ES0112793007": "ES0174735037",
+        "ES0112793049": "ES0112793015",  # RF AHORRO -> Santander RF Ahorro (target)
+        "ES0112793023": "ES0112793015",
+    }
+    forced_sources = set(FORCE_MAP.keys())
+    forced_targets = set(FORCE_MAP.values())
+
+    # Disponibilidad: True si Family está en dfII_all OR si ISIN fuente está en forced map y su target existe (SAM or dfII_all)
+    def _is_available_family(fam, source_isin):
+        fam_norm = str(fam).strip()
+        if fam_norm and fam_norm in families_in_II:
+            return True
+        s_isin = str(source_isin).strip().upper()
+        if s_isin in forced_sources:
+            t = FORCE_MAP[s_isin]
+            if t in sam_isins or t in dfII_isins:
+                return True
+        return False
+
+    # ---------------------- Selector persistente ----------------------
     key_df = "selector_fondos_allI_df"
+    editor_cols = ["Family Name", "Name", "Disponible en Cartera II (AI)", "Incluir", "Usar versión original (I)"]
+
+    # Build initial selector table (one row per Family Name)
+    base_sel = rep_I.copy()
+    base_sel["ISIN_EXAMPLE"] = base_sel["Family Name"].map(
+        lambda f: dfI_all[dfI_all["Family Name"] == f]["ISIN"].astype(str).iloc[0]
+        if f in dfI_all["Family Name"].values else ""
+    )
+
+    # Compute availability per row (uses dfII_all and forced rules)
+    base_sel["Disponible en Cartera II (AI)"] = base_sel.apply(
+        lambda r: _is_available_family(r["Family Name"], r["ISIN_EXAMPLE"]), axis=1
+    )
+
     if key_df not in st.session_state:
-        sel = rep_I.copy()
-        sel.insert(0, "Incluir", True)  # entra por defecto
-        # si no existe AI, por defecto usar original; si existe AI, por defecto usar transformada
-        sel.insert(1, "Usar versión original (I)", sel["Family Name"].apply(lambda f: f not in families_in_II))
-        # informativo: ¿está en II?
-        sel.insert(2, "Disponible en Cartera II (AI)", sel["Family Name"].apply(lambda f: f in families_in_II))
-        st.session_state[key_df] = sel
+        # por defecto: incluir=True para disponibles, False para no disponibles
+        base = base_sel[["Family Name", "Name", "Disponible en Cartera II (AI)"]].copy()
+        base["Incluir"] = base["Disponible en Cartera II (AI)"]
+        base["Usar versión original (I)"] = False
+        st.session_state[key_df] = base[editor_cols].copy()
     else:
-        # Resincro por Family Name manteniendo elecciones previas
-        prev = st.session_state[key_df][["Family Name","Incluir","Usar versión original (I)"]]
-        sel = rep_I.merge(prev, on="Family Name", how="left")
-        sel["Incluir"] = sel["Incluir"].fillna(True)
-        sel["Usar versión original (I)"] = sel["Usar versión original (I)"].fillna(
-            sel["Family Name"].apply(lambda f: f not in families_in_II)
-        )
-        sel.insert(2, "Disponible en Cartera II (AI)", sel["Family Name"].apply(lambda f: f in families_in_II))
-        st.session_state[key_df] = sel
+        # Resincro (mantener elecciones previas)
+        prev = st.session_state[key_df][["Family Name", "Incluir", "Usar versión original (I)"]]
+        sel = base_sel.merge(prev, on="Family Name", how="left")
+        sel["Incluir"] = sel["Incluir"].fillna(sel["Disponible en Cartera II (AI)"])
+        sel["Usar versión original (I)"] = sel["Usar versión original (I)"].fillna(False)
+        st.session_state[key_df] = sel[editor_cols].copy()
 
     # --- Botón / modo edición ---
     if "edit_mode" not in st.session_state:
@@ -717,31 +740,7 @@ if (
     if st.button("🛠️ Editar cartera (incluir/excluir y elegir I/II)"):
         st.session_state.edit_mode = not st.session_state.edit_mode
 
-    # Subconjunto de columnas para el editor (sin Valor / OC)
-    editor_cols = ["Family Name", "Name", "Disponible en Cartera II (AI)", "Incluir", "Usar versión original (I)"]
-
-    # Inicialización (primer render): Incluir = Disponible / Usar original = False
-    if key_df not in st.session_state:
-        base = rep_I.copy()
-        base["Disponible en Cartera II (AI)"] = base["Family Name"].isin(families_in_II)
-        st.session_state[key_df] = pd.DataFrame({
-            "Family Name": base["Family Name"],
-            "Name": base["Name"],
-            "Disponible en Cartera II (AI)": base["Disponible en Cartera II (AI)"],
-            "Incluir": base["Disponible en Cartera II (AI)"],  # ← igual que Disponible
-            "Usar versión original (I)": False                 # ← vacío por defecto
-        })
-    else:
-        # Re-sincronizar por Family Name manteniendo las elecciones previas
-        prev = st.session_state[key_df][["Family Name","Incluir","Usar versión original (I)"]]
-        base = rep_I.merge(prev, on="Family Name", how="left")
-        base["Disponible en Cartera II (AI)"] = base["Family Name"].isin(families_in_II)
-        # faltantes → defaults
-        base["Incluir"] = base["Incluir"].fillna(base["Disponible en Cartera II (AI)"])
-        base["Usar versión original (I)"] = base["Usar versión original (I)"].fillna(False)
-        st.session_state[key_df] = base[["Family Name","Name","Disponible en Cartera II (AI)","Incluir","Usar versión original (I)"]]
-
-    # Editor
+    # Editor UI: muestra TODOS los fondos (rep_I) para control manual
     if st.session_state.edit_mode:
         st.caption("Marca **Incluir** para que el fondo entre en la comparativa. "
                    "Si incluyes uno **no disponible** en Cartera II (AI), se marcará automáticamente **Usar versión original (I)**.")
@@ -750,21 +749,24 @@ if (
             use_container_width=True,
             hide_index=True,
             key="selector_editor_allI",
-            disabled=["Family Name","Name","Disponible en Cartera II (AI)"],
+            disabled=["Family Name", "Name", "Disponible en Cartera II (AI)"],
             column_config={
                 "Disponible en Cartera II (AI)": st.column_config.CheckboxColumn(disabled=True),
                 "Incluir": st.column_config.CheckboxColumn(),
                 "Usar versión original (I)": st.column_config.CheckboxColumn(),
             },
         )
-        # Regla automática: Incluir==True y Disponible==False -> Usar versión original = True
-        m = edited["Incluir"] & ~edited["Disponible en Cartera II (AI)"]
-        edited.loc[m, "Usar versión original (I)"] = True
+
+        # Regla automática: si el usuario marca Incluir en un fondo NO disponible -> Usar original = True
+        m_auto = edited["Incluir"] & ~edited["Disponible en Cartera II (AI)"]
+        if m_auto.any():
+            edited.loc[m_auto, "Usar versión original (I)"] = True
 
         if st.button("✅ Aplicar selección"):
+            # Guardar la tabla editada en session_state
             st.session_state[key_df] = edited[editor_cols].copy()
 
-    # --- Selección final (familias incluidas y forzadas a original) ---
+    # --- Selección final (lo que el usuario ha decidido incluir) ---
     sel_tbl = st.session_state[key_df]
     selected = sel_tbl[sel_tbl["Incluir"]].copy()
     if selected.empty:
@@ -779,150 +781,156 @@ if (
         ].tolist()
     )
 
-    # --- Cartera II (derecha) según selección ---
-    # --- construir sets/flags desde Cartera II (dfII_sel) ---
-    # normalizar ISINs y Family Names presentes en la Cartera II
-    isins_ii = set(dfII_sel["ISIN"].astype(str).str.strip().str.upper().fillna(""))
-    fam_set_ii = set(dfII_sel["Family Name"].astype(str).str.strip().str.lower().fillna(""))
-    
-    # patrón corto plazo (ya lo tienes definido en pattern_corto, si no, usa esta línea)
-    pattern_corto = r"(SPB\s*RF\s*CORTO\s*PLAZO|Santander\s+Corto\s+Plazo)"
-    
-    # función de comprobación: ¿está la fila de dfI_all representada en Cartera II?
-    def _available_in_ii(row):
-        # 1) por ISIN (directo)
-        isin = str(row.get("ISIN","")).strip().upper()
-        if isin and isin in isins_ii:
-            return True
-    
-        # 2) por Family Name (normalizado)
-        fam = str(row.get("Family Name","")).strip().lower()
-        if fam and fam in fam_set_ii:
-            return True
-    
-        # 3) caso especial: buscar coincidencia por patrón en Name
-        name = str(row.get("Name",""))
-        if name and re.search(pattern_corto, name, flags=re.IGNORECASE):
-            # si en la Cartera II hay alguna fila cuyo Name o Family Name cumple el mismo patrón,
-            # consideramos el fondo "disponible" (ej. SPB -> Santander Corto Plazo Clase Cartera)
-            if dfII_sel["Name"].astype(str).str.contains(pattern_corto, case=False, regex=True, na=False).any() \
-               or dfII_sel["Family Name"].astype(str).str.contains("corto", case=False, na=False).any():
-                return True
-    
-        # no encontrado
-        return False
-    
-    # Aplicar al DataFrame que usas para la tabla de edición (ej. dfI_all o la variable que uses)
-    # Si tu tabla de edición es df_edit o dfI_all, aplica sobre esa. Aquí uso dfI_all como ejemplo:
-    df_edit = dfI_all.copy()  # o la variable que estés mostrando en la UI para editar
-    df_edit["Disponible en Cartera II (AI)"] = df_edit.apply(_available_in_ii, axis=1)
-    
-    # Si quieres mostrar SOLO los fondos NO disponibles (para que el usuario los añada a Cartera II),
-    # filtra así y pásalo a la UI de editar:
-    df_edit_no_disponible = df_edit[~df_edit["Disponible en Cartera II (AI)"]].copy()
+    # ========================
+    # Construir subconjunto de Cartera II para comparar (dfII_comp)
+    # - dfII_all (la vista derecha) se mantiene EXACTA como Paso 3 (fuente de verdad)
+    # - dfII_comp es la parte de dfII_all que corresponde a las familias seleccionadas (y que no han sido forzadas a usar original)
+    # ========================
+    dfII_view = dfII_all.copy()  # lo mostramos tal cual (PASO 3 = PASO 4 derecha)
 
-    # --- Cartera I (izquierda) alineada 1–a–1 con dfII_sel FINAL ---
-    pattern_corto = r"(SPB\s*RF\s*CORTO\s*PLAZO|Santander\s+Corto\s+Plazo)"
+    # Families que pedimos que se usen como AI (es decir: incluidas y NO marcadas como usar original)
+    families_ai_to_use = families_selected - families_use_orig
+
+    # dfII_comp: filas de dfII_all que correspondan a esas familias
+    if not dfII_all.empty and families_ai_to_use:
+        dfII_comp = dfII_all[dfII_all["Family Name"].isin(families_ai_to_use)].copy()
+    else:
+        dfII_comp = pd.DataFrame(columns=dfII_all.columns)
+
+    # Para familias que no aparecen en dfII_all pero sí están en forced rules,
+    # incorporamos la fila forzada tomando la info desde SAM_CLEAN_MAP (si existe)
+    for fam in (families_ai_to_use - set(dfII_comp["Family Name"])):
+        # intentar localizar si alguna source ISIN de esa familia está en force_map
+        cand_sources = dfI_all[dfI_all["Family Name"] == fam]["ISIN"].astype(str).str.strip().str.upper().unique().tolist()
+        added = False
+        for src in cand_sources:
+            if src in FORCE_MAP:
+                tgt = FORCE_MAP[src]
+                # buscar registro en dfII_all por ISIN o en SAM_CLEAN_MAP
+                rec = None
+                if tgt in dfII_isins:
+                    rec = dfII_all[dfII_all["ISIN"].astype(str).str.strip().str.upper() == tgt].iloc[0].to_dict()
+                else:
+                    rec = next((r for r in SAM_CLEAN_MAP if str(r.get("ISIN","")).strip().upper() == tgt), None)
+                if rec:
+                    # construir fila con columnas de dfII_all
+                    row = {c: rec.get(c, "") for c in dfII_all.columns}
+                    dfII_comp = pd.concat([dfII_comp, pd.DataFrame([row])], ignore_index=True)
+                    added = True
+                    break
+        # si no encontrado, no hacemos nada (no hay AI real para esa familia)
+
+    # dfII_comp ahora contiene las filas AI que se comparan (puede estar vacío para familias que usan original)
+    # Reindex columns to common columns for safe concat later
+    common_cols = list(dfII_all.columns)
+    dfI_as_II = pd.DataFrame([], columns=common_cols)
+    if families_use_orig:
+        # para las familias que se forzan a usar original, tomamos la fila original (dfI_all) y la reindexamos a columnas de dfII
+        dfI_orig = dfI_all[dfI_all["Family Name"].isin(families_use_orig)].copy()
+        if not dfI_orig.empty:
+            dfI_as_II = dfI_orig.reindex(columns=common_cols, fill_value=np.nan)
+
+    # ========================
+    # Construir la vista de la comparación real (subconjunto incluido):
+    # dfII_comp (AI rows matching selected families) + dfI_as_II (original rows for families forced to original)
+    # ========================
+    dfII_comp_final = pd.concat([dfII_comp, dfI_as_II], ignore_index=True) if (not dfII_comp.empty or not dfI_as_II.empty) else pd.DataFrame(columns=common_cols)
+
+    # --- Alineamos Cartera I (izquierda) 1-a-1 con dfII_comp_final (para mostrar equivalentes originales)
     rows_I = []
     cols_I = dfI_all.columns
-    for _, rowII in dfII_sel.reset_index(drop=True).iterrows():
-        # ==== REGLA FORZADA: mapear ISINs específicos a clases SAM concretas ====
-        _force_spb_isins = {"ES0112793031", "ES0112793007"}
-        _force_rf_ahorro_isins = {"ES0112793049", "ES0112793023"}
-    
+
+    # Force mapping sets for quicker lookup
+    sam_lookup_by_isin = { str(r.get("ISIN","")).strip().upper(): r for r in SAM_CLEAN_MAP if r.get("ISIN","") }
+
+    for _, rowII in dfII_comp_final.reset_index(drop=True).iterrows():
         picked = None
-        isin_ii = str(rowII.get("ISIN", "")).strip().upper()
-    
-        if isin_ii in _force_spb_isins:
-            target_isin = "ES0174735037"
-            sam_rec = next((r for r in SAM_CLEAN_MAP if str(r.get("ISIN", "")).strip().upper() == target_isin), None)
-            if sam_rec is not None:
-                picked = pd.Series({c: sam_rec.get(c, "") for c in cols_I}, index=cols_I)
-                rows_I.append(picked.reindex(cols_I) if picked is not None else pd.Series(index=cols_I, dtype="object"))
-                continue
-    
-        if isin_ii in _force_rf_ahorro_isins:
-            target_isin = "ES0112793015"
-            sam_rec = next((r for r in SAM_CLEAN_MAP if str(r.get("ISIN", "")).strip().upper() == target_isin), None)
-            if sam_rec is not None:
-                picked = pd.Series({c: sam_rec.get(c, "") for c in cols_I}, index=cols_I)
-                rows_I.append(picked.reindex(cols_I) if picked is not None else pd.Series(index=cols_I, dtype="object"))
-                continue
-        # ==== fin regla forzada ====
-    
-        # Regla especial por ES0174735037 (buscar por Name usando pattern_corto)
-        if str(rowII.get("ISIN", "")).strip().upper() == "ES0174735037":
-            if "Name" in dfI_all.columns:
-                cand = dfI_all["Name"].astype(str).str.contains(pattern_corto, case=False, regex=True, na=False)
-                cand = dfI_all[cand]
-                if not cand.empty:
-                    if "VALOR ACTUAL (EUR)" in cand.columns:
-                        cand = cand.sort_values("VALOR ACTUAL (EUR)", ascending=False)
-                    picked = cand.iloc[0]
-    
-        # Regla general por Family Name (preferir Currency/Hedged y valor)
-        if picked is None:
+        # Si la fila en dfII_comp_final vino de dfI_as_II (original forced), buscame la original por Family
+        if pd.isna(rowII.get("ISIN","")) and pd.notna(rowII.get("Family Name","")):
             fam = rowII.get("Family Name")
-            if pd.notna(fam) and "Family Name" in dfI_all.columns:
-                cand = dfI_all[dfI_all["Family Name"] == fam].copy()
-                if not cand.empty:
-                    if "Currency" in cand.columns and "Hedged" in cand.columns:
-                        cand["_pref_cur"] = cand["Currency"].astype(str).eq(str(rowII.get("Currency",""))).astype(int)
-                        cand["_pref_hed"] = cand["Hedged"].astype(str).eq(str(rowII.get("Hedged",""))).astype(int)
-                        if "VALOR ACTUAL (EUR)" in cand.columns:
-                            cand["_valor"] = pd.to_numeric(cand["VALOR ACTUAL (EUR)"], errors="coerce").fillna(0)
-                            cand = cand.sort_values(["_pref_cur","_pref_hed","_valor"], ascending=[False, False, False])
-                            cand = cand.drop(columns=["_valor"])
-                        else:
-                            cand = cand.sort_values(["_pref_cur","_pref_hed"], ascending=[False, False])
-                        cand = cand.drop(columns=["_pref_cur","_pref_hed"])
-                    picked = cand.iloc[0]
-    
+            cand = dfI_all[dfI_all["Family Name"] == fam].copy()
+            if not cand.empty:
+                picked = cand.iloc[0]
+
+        # Si existe ISIN en rowII, intentar mapear a la fila original por Family Name preferentemente
+        if picked is None and pd.notna(rowII.get("Family Name")):
+            fam = rowII.get("Family Name")
+            cand = dfI_all[dfI_all["Family Name"] == fam].copy()
+            if not cand.empty:
+                # preferir mismas Currency/Hedged si existen
+                if "Currency" in cand.columns and "Hedged" in cand.columns:
+                    cand["_pref_cur"] = cand["Currency"].astype(str).eq(str(rowII.get("Currency",""))).astype(int)
+                    cand["_pref_hed"] = cand["Hedged"].astype(str).eq(str(rowII.get("Hedged",""))).astype(int)
+                    if "VALOR ACTUAL (EUR)" in cand.columns:
+                        cand["_valor"] = pd.to_numeric(cand["VALOR ACTUAL (EUR)"], errors="coerce").fillna(0)
+                        cand = cand.sort_values(["_pref_cur","_pref_hed","_valor"], ascending=[False, False, False])
+                        cand = cand.drop(columns=["_valor"])
+                    else:
+                        cand = cand.sort_values(["_pref_cur","_pref_hed"], ascending=[False, False])
+                    cand = cand.drop(columns=["_pref_cur","_pref_hed"])
+                picked = cand.iloc[0]
+
+        # Fallback: if no Family match, try to resolve by forced mapping source ISIN -> original
+        if picked is None:
+            # see if this rowII corresponds to a forced target ISIN; find corresponding source in dfI_all
+            isin_ii = str(rowII.get("ISIN","")).strip().upper()
+            if isin_ii in forced_targets:
+                # find source ISINs that map to this target
+                sources = [s for s,t in FORCE_MAP.items() if t == isin_ii]
+                for s in sources:
+                    cand = dfI_all[dfI_all["ISIN"].astype(str).str.strip().str.upper() == s]
+                    if not cand.empty:
+                        picked = cand.iloc[0]
+                        break
+
         rows_I.append(picked.reindex(cols_I) if picked is not None else pd.Series(index=cols_I, dtype="object"))
 
     dfI_sub = pd.DataFrame(rows_I, columns=cols_I)
     if "ISIN" in dfI_sub.columns:
         dfI_sub = dfI_sub[~(dfI_sub["ISIN"].isna() & dfI_sub.isna().all(axis=1))].copy()
 
-    # --- Recalcular pesos por valor (respeta OC: los sin OC quedan con Weight % = 0) ---
-    dfI_sub  = recalcular_pesos_por_valor_respetando_oc(dfI_sub,  valor_col="VALOR ACTUAL (EUR)")
+    # Recalcular pesos y TER para las filas incluidas (comparativa)
+    dfI_sub = recalcular_pesos_por_valor_respetando_oc(dfI_sub, valor_col="VALOR ACTUAL (EUR)")
     ter_I_sub = calcular_ter_por_valor(dfI_sub)
-
-    dfII_sel  = recalcular_pesos_por_valor_respetando_oc(dfII_sel, valor_col="VALOR ACTUAL (EUR)")
-    ter_II_sel = calcular_ter_por_valor(dfII_sel)
+    dfII_comp_final = recalcular_pesos_por_valor_respetando_oc(dfII_comp_final, valor_col="VALOR ACTUAL (EUR)")
+    ter_II_sub = calcular_ter_por_valor(dfII_comp_final)
 
     # ---------- Presentación ----------
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("#### Cartera I (fondos incluidos)")
+        st.markdown("#### Cartera I (fondos incluidos / equivalentes en I)")
         mostrar_tabla_con_formato(dfI_sub, "Tabla Cartera I (subset comparable)")
-        st.metric("TER medio ponderado", _fmt_ratio_eu_percent(ter_I_sub, 2) if ter_I_sub is not None else "-")
+        st.metric("TER medio ponderado (I)", _fmt_ratio_eu_percent(ter_I_sub, 2) if ter_I_sub is not None else "-")
 
     with c2:
-        st.markdown("#### Cartera II (final)")
-        mostrar_tabla_con_formato(dfII_sel, "Tabla Cartera II (final con I/II según selección)")
-        st.metric("TER medio ponderado", _fmt_ratio_eu_percent(ter_II_sel, 2) if ter_II_sel is not None else "-")
+        st.markdown("#### Cartera II (PASO 3, vista exacta)")
+        # mostramos dfII_all EXACTAMENTE como en Paso 3 (vista)
+        mostrar_tabla_con_formato(dfII_view, "Tabla Cartera II (final con I/II según selección) — vista paso 3")
+        st.metric("TER medio ponderado (II vista completa)", _fmt_ratio_eu_percent(calcular_ter_por_valor(dfII_view), 2) if not dfII_view.empty else "-")
+        st.markdown("#### Cartera II (Subconjunto usado en comparativa)")
+        mostrar_tabla_con_formato(dfII_comp_final, "Tabla Cartera II (usada en comparativa)")
 
-    if ter_I_sub is not None and ter_II_sel is not None:
+    # Diferencia de TER sobre el subconjunto comparado
+    if ter_I_sub is not None and ter_II_sub is not None:
         st.markdown("---")
         st.subheader("Diferencia de TER (II − I) en fondos incluidos")
-        st.metric("Diferencia", _fmt_ratio_eu_percent(ter_II_sel - ter_I_sub, 2))
+        st.metric("Diferencia", _fmt_ratio_eu_percent(ter_II_sub - ter_I_sub, 2))
 
-    # Botón Outlook (dentro del IF: ya existen dfI_sub/dfII_sel)
+    # Botón Outlook (dentro del IF: ya existen dfI_sub/dfII_comp_final)
     if st.button("📧 Abrir Outlook con comparativa"):
         abrir_outlook_con_comparativa(
-            destinatarios="",  # o None
+            destinatarios="",
             asunto="Comparativa TER – Cartera I vs Cartera II (definitiva)",
             dfI_sub=dfI_sub,
-            dfII_sel=dfII_sel,
+            dfII_sel=dfII_comp_final,
             ter_I_sub=ter_I_sub,
-            ter_II_sel=ter_II_sel,
+            ter_II_sel=ter_II_sub,
             adjuntar_excel=True
         )
 
 else:
     st.info("Primero calcula Cartera I y convierte a Cartera II para ver la comparativa.")
-
+  
 # =========================
 # 6) Incidencias (deduplicadas por Name+mensaje)
 # =========================
