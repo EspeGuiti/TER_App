@@ -783,11 +783,9 @@ if (
 
     # ========================
     # Construir subconjunto de Cartera II para comparar (dfII_comp)
-    # - dfII_all (la vista derecha) se mantiene EXACTA como Paso 3 (fuente de verdad)
+    # - dfII_all (la fuente de verdad) se mantiene INTACTA (PASO 3)
     # - dfII_comp es la parte de dfII_all que corresponde a las familias seleccionadas (y que no han sido forzadas a usar original)
     # ========================
-    dfII_view = dfII_all.copy()  # lo mostramos tal cual (PASO 3 = PASO 4 derecha)
-
     # Families que pedimos que se usen como AI (es decir: incluidas y NO marcadas como usar original)
     families_ai_to_use = families_selected - families_use_orig
 
@@ -800,32 +798,24 @@ if (
     # Para familias que no aparecen en dfII_all pero sí están en forced rules,
     # incorporamos la fila forzada tomando la info desde SAM_CLEAN_MAP (si existe)
     for fam in (families_ai_to_use - set(dfII_comp["Family Name"])):
-        # intentar localizar si alguna source ISIN de esa familia está en force_map
         cand_sources = dfI_all[dfI_all["Family Name"] == fam]["ISIN"].astype(str).str.strip().str.upper().unique().tolist()
-        added = False
         for src in cand_sources:
             if src in FORCE_MAP:
                 tgt = FORCE_MAP[src]
-                # buscar registro en dfII_all por ISIN o en SAM_CLEAN_MAP
                 rec = None
                 if tgt in dfII_isins:
                     rec = dfII_all[dfII_all["ISIN"].astype(str).str.strip().str.upper() == tgt].iloc[0].to_dict()
                 else:
                     rec = next((r for r in SAM_CLEAN_MAP if str(r.get("ISIN","")).strip().upper() == tgt), None)
                 if rec:
-                    # construir fila con columnas de dfII_all
                     row = {c: rec.get(c, "") for c in dfII_all.columns}
                     dfII_comp = pd.concat([dfII_comp, pd.DataFrame([row])], ignore_index=True)
-                    added = True
                     break
-        # si no encontrado, no hacemos nada (no hay AI real para esa familia)
 
-    # dfII_comp ahora contiene las filas AI que se comparan (puede estar vacío para familias que usan original)
     # Reindex columns to common columns for safe concat later
     common_cols = list(dfII_all.columns)
     dfI_as_II = pd.DataFrame([], columns=common_cols)
     if families_use_orig:
-        # para las familias que se forzan a usar original, tomamos la fila original (dfI_all) y la reindexamos a columnas de dfII
         dfI_orig = dfI_all[dfI_all["Family Name"].isin(families_use_orig)].copy()
         if not dfI_orig.empty:
             dfI_as_II = dfI_orig.reindex(columns=common_cols, fill_value=np.nan)
@@ -840,7 +830,6 @@ if (
     rows_I = []
     cols_I = dfI_all.columns
 
-    # Force mapping sets for quicker lookup
     sam_lookup_by_isin = { str(r.get("ISIN","")).strip().upper(): r for r in SAM_CLEAN_MAP if r.get("ISIN","") }
 
     for _, rowII in dfII_comp_final.reset_index(drop=True).iterrows():
@@ -852,12 +841,10 @@ if (
             if not cand.empty:
                 picked = cand.iloc[0]
 
-        # Si existe ISIN en rowII, intentar mapear a la fila original por Family Name preferentemente
         if picked is None and pd.notna(rowII.get("Family Name")):
             fam = rowII.get("Family Name")
             cand = dfI_all[dfI_all["Family Name"] == fam].copy()
             if not cand.empty:
-                # preferir mismas Currency/Hedged si existen
                 if "Currency" in cand.columns and "Hedged" in cand.columns:
                     cand["_pref_cur"] = cand["Currency"].astype(str).eq(str(rowII.get("Currency",""))).astype(int)
                     cand["_pref_hed"] = cand["Hedged"].astype(str).eq(str(rowII.get("Hedged",""))).astype(int)
@@ -870,12 +857,9 @@ if (
                     cand = cand.drop(columns=["_pref_cur","_pref_hed"])
                 picked = cand.iloc[0]
 
-        # Fallback: if no Family match, try to resolve by forced mapping source ISIN -> original
         if picked is None:
-            # see if this rowII corresponds to a forced target ISIN; find corresponding source in dfI_all
             isin_ii = str(rowII.get("ISIN","")).strip().upper()
             if isin_ii in forced_targets:
-                # find source ISINs that map to this target
                 sources = [s for s,t in FORCE_MAP.items() if t == isin_ii]
                 for s in sources:
                     cand = dfI_all[dfI_all["ISIN"].astype(str).str.strip().str.upper() == s]
@@ -903,12 +887,9 @@ if (
         st.metric("TER medio ponderado (I)", _fmt_ratio_eu_percent(ter_I_sub, 2) if ter_I_sub is not None else "-")
 
     with c2:
-        st.markdown("#### Cartera II (PASO 3, vista exacta)")
-        # mostramos dfII_all EXACTAMENTE como en Paso 3 (vista)
-        mostrar_tabla_con_formato(dfII_view, "Tabla Cartera II (final con I/II según selección) — vista paso 3")
-        st.metric("TER medio ponderado (II vista completa)", _fmt_ratio_eu_percent(calcular_ter_por_valor(dfII_view), 2) if not dfII_view.empty else "-")
         st.markdown("#### Cartera II (Subconjunto usado en comparativa)")
         mostrar_tabla_con_formato(dfII_comp_final, "Tabla Cartera II (usada en comparativa)")
+        st.metric("TER medio ponderado (II, subconjunto comparado)", _fmt_ratio_eu_percent(ter_II_sub, 2) if ter_II_sub is not None else "-")
 
     # Diferencia de TER sobre el subconjunto comparado
     if ter_I_sub is not None and ter_II_sub is not None:
@@ -922,7 +903,7 @@ if (
             destinatarios="",
             asunto="Comparativa TER – Cartera I vs Cartera II (definitiva)",
             dfI_sub=dfI_sub,
-            dfII_sel=dfII_comp_final,
+            dfII_sel=dfII_comp_final,  # ahora adjuntamos el subconjunto usado en la comparativa
             ter_I_sub=ter_I_sub,
             ter_II_sel=ter_II_sub,
             adjuntar_excel=True
@@ -930,7 +911,7 @@ if (
 
 else:
     st.info("Primero calcula Cartera I y convierte a Cartera II para ver la comparativa.")
-  
+
 # =========================
 # 6) Incidencias (deduplicadas por Name+mensaje)
 # =========================
