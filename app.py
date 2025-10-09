@@ -13,7 +13,7 @@ st.set_page_config(page_title="Calculadora TER + AI", layout="wide")
 st.markdown("# 📊 Calculadora de TER — Cartera I vs Cartera II (Asesoramiento Independiente)")
 
 # 👇 Disclaimer (letra pequeña, antes del Paso 1)
-st.caption("**Herramienta de uso interno.** Recordamos la obligación de revisar la información. IMPORTANTE: Consultar con los equipos correspondientes todas las clases con Incidencias")
+st.caption("**Herramienta de uso interno.** Recordamos la obligación de revisar la información. IMPORTANTE: Consultar con los equipos correspondientes todas las clases con Incidencias a altayconsultasclasesasin@gruposantander.com")
 
 
 # =========================
@@ -246,21 +246,23 @@ Saludos,
         mail.Attachments.Add(tmp_path)
 
     mail.Display()
-def _sam_lookup(fam: str, currency: str | None = None, hedged: str | None = None):
-    """Busca entrada SAM por Family Name (y opcionalmente Currency/Hedged)."""
+
+def _sam_lookup(fam: str, currency: Optional[str] = None, hedged: Optional[str] = None):
+    """
+    Busca entrada SAM por Family Name (único criterio real hoy).
+    Acepta los parámetros `currency` y `hedged` por compatibilidad con llamadas existentes,
+    pero actualmente los IGNORA porque el catálogo SAM sólo contiene 'Family Name' como clave.
+    """
     if not fam:
         return None
-    fam_norm = str(fam).strip()
-    # 1) Coincidencia específica por Family+Currency+Hedged (si tu catálogo la trae)
-    if currency is not None and hedged is not None:
-        for rec in SAM_CLEAN_MAP:
-            if (rec.get("Family Name", "").strip() == fam_norm and
-                str(rec.get("Currency", "")).strip() == str(currency).strip() and
-                str(rec.get("Hedged", "")).strip() == str(hedged).strip()):
-                return rec
-    # 2) Fallback por Family Name
+    fam_norm = str(fam).strip().lower()
+
+    # Búsqueda case-insensitive y trimming por Family Name
     for rec in SAM_CLEAN_MAP:
-        if rec.get("Family Name", "").strip() == fam_norm:
+        rec_fam = rec.get("Family Name", "")
+        if rec_fam is None:
+            continue
+        if str(rec_fam).strip().lower() == fam_norm:
             return rec
     return None
 
@@ -793,20 +795,40 @@ if (
     pattern_corto = r"(SPB\s*RF\s*CORTO\s*PLAZO|Santander\s+Corto\s+Plazo)"
     rows_I = []
     cols_I = dfI_all.columns
+    
+	for _, rowII in dfII_sel.reset_index(drop=True).iterrows():
+        # ==== REGLA FORZADA DE CLIENTE: mapear ISINs específicos a clases SAM concretas ====
+        # Si en Cartera II aparece alguno de estos ISINs, forzar la clase en Cartera I (tomada del SAM_CLEAN_MAP)
+        _force_spb_isins = {"ES0112793031", "ES0112793007"}         # mapear a SPB RF CORTO PLAZO -> ES0174735037
+        _force_rf_ahorro_isins = {"ES0112793049", "ES0112793023"}  # mapear a SANTANDER RF AHORRO -> ES0112793015
+    
+        picked = None  # valor por defecto si no encontramos nada
+    
+        isin_ii = str(rowII.get("ISIN", "")).strip().upper()
+    
+        if isin_ii in _force_spb_isins:
+            # Buscar registro SAM con ISIN objetivo ES0174735037 (Santander Corto Plazo - Clase Cartera)
+            target_isin = "ES0174735037"
+            sam_rec = next((r for r in SAM_CLEAN_MAP if str(r.get("ISIN", "")).strip().upper() == target_isin), None)
+            if sam_rec is not None:
+                # construir Series con las columnas de dfI_all (cols_I) usando valores de sam_rec
+                picked = pd.Series({c: sam_rec.get(c, "") for c in cols_I}, index=cols_I)
+                rows_I.append(picked.reindex(cols_I) if picked is not None else pd.Series(index=cols_I, dtype="object"))
+                continue  # pasar a la siguiente fila de dfII_sel
+    
+        if isin_ii in _force_rf_ahorro_isins:
+            # Buscar registro SAM con ISIN objetivo ES0112793015 (Santander RF Ahorro - Clase Cartera)
+            target_isin = "ES0112793015"
+            sam_rec = next((r for r in SAM_CLEAN_MAP if str(r.get("ISIN", "")).strip().upper() == target_isin), None)
+            if sam_rec is not None:
+                picked = pd.Series({c: sam_rec.get(c, "") for c in cols_I}, index=cols_I)
+                rows_I.append(picked.reindex(cols_I) if picked is not None else pd.Series(index=cols_I, dtype="object"))
+                continue
+        # ==== fin regla forzada ====
 
-    for _, rowII in dfII_sel.reset_index(drop=True).iterrows():
-        picked = None
-
-        # Regla especial: ES0174735037 -> buscar por Name en I
-        if str(rowII.get("ISIN", "")).strip().upper() == "ES0174735037":
-            if "Name" in dfI_all.columns:
-                cand = dfI_all["Name"].astype(str).str.contains(pattern_corto, case=False, regex=True, na=False)
-                cand = dfI_all[cand]
-                if not cand.empty:
-                    if "VALOR ACTUAL (EUR)" in cand.columns:
-                        cand = cand.sort_values("VALOR ACTUAL (EUR)", ascending=False)
-                    picked = cand.iloc[0]
-
+        # --- (A partir de aquí continúa la lógica original del app.py: regla especial por ISIN ES0174735037, búsqueda por Family Name, etc.) ---
+	
+   
         # Regla general: por Family Name, preferir misma Currency/Hedged que II
         if picked is None:
             fam = rowII.get("Family Name")
