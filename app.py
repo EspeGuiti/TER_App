@@ -795,40 +795,31 @@ if (
     pattern_corto = r"(SPB\s*RF\s*CORTO\s*PLAZO|Santander\s+Corto\s+Plazo)"
     rows_I = []
     cols_I = dfI_all.columns
-    
-	for _, rowII in dfII_sel.reset_index(drop=True).iterrows():
-        # ==== REGLA FORZADA DE CLIENTE: mapear ISINs específicos a clases SAM concretas ====
-        # Si en Cartera II aparece alguno de estos ISINs, forzar la clase en Cartera I (tomada del SAM_CLEAN_MAP)
-        _force_spb_isins = {"ES0112793031", "ES0112793007"}         # mapear a SPB RF CORTO PLAZO -> ES0174735037
-        _force_rf_ahorro_isins = {"ES0112793049", "ES0112793023"}  # mapear a SANTANDER RF AHORRO -> ES0112793015
-    
-        picked = None  # valor por defecto si no encontramos nada
-    
-        isin_ii = str(rowII.get("ISIN", "")).strip().upper()
-    
-        if isin_ii in _force_spb_isins:
-            # Buscar registro SAM con ISIN objetivo ES0174735037 (Santander Corto Plazo - Clase Cartera)
-            target_isin = "ES0174735037"
-            sam_rec = next((r for r in SAM_CLEAN_MAP if str(r.get("ISIN", "")).strip().upper() == target_isin), None)
-            if sam_rec is not None:
-                # construir Series con las columnas de dfI_all (cols_I) usando valores de sam_rec
-                picked = pd.Series({c: sam_rec.get(c, "") for c in cols_I}, index=cols_I)
-                rows_I.append(picked.reindex(cols_I) if picked is not None else pd.Series(index=cols_I, dtype="object"))
-                continue  # pasar a la siguiente fila de dfII_sel
-    
-        if isin_ii in _force_rf_ahorro_isins:
-            # Buscar registro SAM con ISIN objetivo ES0112793015 (Santander RF Ahorro - Clase Cartera)
-            target_isin = "ES0112793015"
-            sam_rec = next((r for r in SAM_CLEAN_MAP if str(r.get("ISIN", "")).strip().upper() == target_isin), None)
-            if sam_rec is not None:
-                picked = pd.Series({c: sam_rec.get(c, "") for c in cols_I}, index=cols_I)
-                rows_I.append(picked.reindex(cols_I) if picked is not None else pd.Series(index=cols_I, dtype="object"))
-                continue
-        # ==== fin regla forzada ====
-
-        # --- (A partir de aquí continúa la lógica original del app.py: regla especial por ISIN ES0174735037, búsqueda por Family Name, etc.) ---
+    	for _, rowII in dfII_sel.reset_index(drop=True).iterrows():
+	    # ==== REGLA FORZADA: mapear ISINs específicos a clases SAM concretas ====
+	    _force_spb_isins = {"ES0112793031", "ES0112793007"}         # -> ES0174735037
+	    _force_rf_ahorro_isins = {"ES0112793049", "ES0112793023"}  # -> ES0112793015
 	
-   
+	    picked = None
+	    isin_ii = str(rowII.get("ISIN", "")).strip().upper()
+	
+	    if isin_ii in _force_spb_isins:
+	        target_isin = "ES0174735037"
+	        sam_rec = next((r for r in SAM_CLEAN_MAP if str(r.get("ISIN", "")).strip().upper() == target_isin), None)
+	        if sam_rec is not None:
+	            picked = pd.Series({c: sam_rec.get(c, "") for c in cols_I}, index=cols_I)
+	            rows_I.append(picked.reindex(cols_I) if picked is not None else pd.Series(index=cols_I, dtype="object"))
+	            continue
+	
+	    if isin_ii in _force_rf_ahorro_isins:
+	        target_isin = "ES0112793015"
+	        sam_rec = next((r for r in SAM_CLEAN_MAP if str(r.get("ISIN", "")).strip().upper() == target_isin), None)
+	        if sam_rec is not None:
+	            picked = pd.Series({c: sam_rec.get(c, "") for c in cols_I}, index=cols_I)
+	            rows_I.append(picked.reindex(cols_I) if picked is not None else pd.Series(index=cols_I, dtype="object"))
+	            continue
+	    # ==== fin regla forzada ====
+	  
         # Regla general: por Family Name, preferir misma Currency/Hedged que II
         if picked is None:
             fam = rowII.get("Family Name")
